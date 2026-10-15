@@ -9,3 +9,6 @@ feeds.json
 graphify-out/
 .claude/
 CLAUDE.md
+
+# Wrangler dry-run output
+dist/

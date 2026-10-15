@@ -28,5 +28,8 @@ DAILY_POST_LIMIT = "500"
 #   DISCORD_BOT_TOKEN      - from the Discord Developer Portal, Bot tab
 #   DISCORD_APP_ID         - Application ID, Discord Developer Portal
 #
-# Subreddits are fetched via Reddit's public RSS feeds (feeds.json), not
-# Reddit's API, so no Reddit credentials are needed.
+# Optional, only for Reddit login (/reddit commands). Without them the bot
+# still works and fetches subreddits through Reddit's public RSS feeds.
+#   REDDIT_CLIENT_ID       - from https://www.reddit.com/prefs/apps ("web app")
+#   REDDIT_CLIENT_SECRET   - same page
+#   TOKEN_ENCRYPTION_KEY   - any long random string; encrypts users' Reddit tokens in KV

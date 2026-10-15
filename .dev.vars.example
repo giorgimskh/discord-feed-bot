@@ -5,3 +5,9 @@
 DISCORD_PUBLIC_KEY=
 DISCORD_BOT_TOKEN=
 DISCORD_APP_ID=
+
+# Optional: Reddit login (/reddit commands). Leave empty to disable.
+REDDIT_CLIENT_ID=
+REDDIT_CLIENT_SECRET=
+# Any long random string, e.g. from `openssl rand -base64 32`.
+TOKEN_ENCRYPTION_KEY=

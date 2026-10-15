@@ -1,6 +1,6 @@
 // One-time (or whenever a command definition changes) script to register
-// the /posts, /sources, and /usage slash commands with Discord in a single
-// run.
+// the /posts, /sources, /usage, and /reddit slash commands with Discord in a
+// single run.
 // This includes option-level changes (e.g. adding `autocomplete: true` to
 // an option) — Discord won't pick those up until this is re-run.
 // Run with:
@@ -47,6 +47,23 @@ const commands = [
     name: "usage",
     description: "Show how many /posts requests have been used today and how many remain",
   },
+  {
+    name: "reddit",
+    description: "Connect your Reddit account for your home feed and fewer rate limits",
+    options: [
+      { name: "connect", description: "Link your Reddit account", type: 1 }, // SUB_COMMAND
+      { name: "status", description: "Show which Reddit account is linked", type: 1 },
+      { name: "disconnect", description: "Unlink your Reddit account and revoke access", type: 1 },
+      {
+        name: "home",
+        description: "Show your Reddit front page (only visible to you)",
+        type: 1,
+        options: [
+          { name: "limit", description: "Number of posts to return (default 5)", type: 4, required: false },
+        ],
+      },
+    ],
+  },
 ];
 
 const url = guildId
@@ -72,6 +89,6 @@ if (!res.ok) {
 
 console.log(
   guildId
-    ? `Registered /posts, /sources, and /usage commands to guild ${guildId} (should be available immediately).`
-    : "Registered /posts, /sources, and /usage commands globally (may take up to an hour to propagate)."
+    ? `Registered /posts, /sources, /usage, and /reddit commands to guild ${guildId} (should be available immediately).`
+    : "Registered /posts, /sources, /usage, and /reddit commands globally (may take up to an hour to propagate)."
 );

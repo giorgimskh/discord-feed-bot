@@ -1,9 +1,18 @@
 import { verifyKey, InteractionType, InteractionResponseType } from "discord-interactions";
 import feeds from "../feeds.json";
 import { fetchRssEntries, fetchRandomEntries } from "./rss.js";
-import { subredditFeedUrl } from "./reddit.js";
+import { subredditFeedUrl, subredditApiPath, HOME_FEED_PATH, fetchRedditListing } from "./reddit.js";
+import {
+  CALLBACK_PATH,
+  isRedditLoginConfigured,
+  buildConnectUrl,
+  handleOAuthCallback,
+  getAccessToken,
+  getConnectedUsername,
+  disconnectReddit,
+} from "./reddit-oauth.js";
 import { incrementPostsUsage, getPostsUsage } from "./usage.js";
-import { buildEmbeds, buildErrorFollowupPayload, sendFollowup } from "./discord.js";
+import { EPHEMERAL, buildEmbeds, buildErrorFollowupPayload, sendFollowup } from "./discord.js";
 import { buildSourceSearchIndex, searchSources } from "./autocomplete.js";
 
 function json(body, status = 200) {
@@ -15,6 +24,34 @@ function json(body, status = 200) {
 
 function errorResponse(message, status) {
   return json({ error: message }, status);
+}
+
+// Guild interactions carry the user under `member`, DMs under `user`.
+function discordUserId(interaction) {
+  return interaction.member?.user?.id ?? interaction.user?.id ?? null;
+}
+
+function reply(content, { ephemeral = false, components } = {}) {
+  return json({
+    type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+    data: { content, ...(ephemeral && { flags: EPHEMERAL }), ...(components && { components }) },
+  });
+}
+
+// Acknowledges right away (Discord's 3-second deadline) and runs `work` in
+// the background. Errors thrown by `work` become the follow-up message.
+function deferred(ctx, env, interaction, work, { ephemeral = false } = {}) {
+  const flags = ephemeral ? { flags: EPHEMERAL } : {};
+  ctx.waitUntil(
+    work().catch((err) => {
+      console.error(err);
+      return sendFollowup(env.DISCORD_APP_ID, interaction.token, {
+        ...buildErrorFollowupPayload(err.message),
+        ...flags,
+      });
+    })
+  );
+  return json({ type: InteractionResponseType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE, data: flags });
 }
 
 function parseOptions(options) {
@@ -53,15 +90,12 @@ function resolveSource(rawSource) {
   return canonicalName ? { name: canonicalName, config: feeds[canonicalName] } : null;
 }
 
-// A source's `url` is a plain string for legacy RSS entries, or `config.url`
-// for entries that also carry a `category` (daily/general); a subreddit
-// config has neither, so its feed URL is built from `subreddit` instead.
+// A non-Reddit source's `url` is a plain string for legacy RSS entries, or
+// `config.url` for entries that also carry a `category` (daily/general).
 // `url` can be `null` as a placeholder for a source that doesn't have a
 // working feed URL yet.
 function getFeedUrl(config) {
-  if (typeof config === "string") return config;
-  if (isRedditConfig(config)) return subredditFeedUrl(config.subreddit);
-  return config.url;
+  return typeof config === "string" ? config : config.url;
 }
 
 function getCategory(config) {
@@ -84,6 +118,25 @@ function selectionMode(config) {
   return isRedditConfig(config) || isDailyCategory(config) ? "latest" : "random";
 }
 
+const REDDIT_API_MAX_LIMIT = 100;
+
+// Users who ran /reddit connect go through Reddit's API (higher rate limit,
+// plus score/comment counts). Everyone else, and any API failure, falls
+// back to the public RSS feed.
+async function fetchSubredditEntries(env, interaction, subreddit, limit) {
+  try {
+    const accessToken = await getAccessToken(env, discordUserId(interaction));
+    if (accessToken) {
+      const apiLimit = Math.min(Math.max(limit, 1), REDDIT_API_MAX_LIMIT);
+      const entries = await fetchRedditListing(accessToken, subredditApiPath(subreddit), apiLimit);
+      return entries.slice(0, limit);
+    }
+  } catch (err) {
+    console.error(`Reddit API failed, falling back to RSS: ${err.message}`);
+  }
+  return fetchRssEntries(subredditFeedUrl(subreddit), limit);
+}
+
 async function handlePostsCommand(opts, interaction, env) {
   await incrementPostsUsage(env);
 
@@ -97,20 +150,23 @@ async function handlePostsCommand(opts, interaction, env) {
 
   const { name: source, config } = resolved;
 
-  const feedUrl = getFeedUrl(config);
-  if (!feedUrl) {
-    throw new Error(`Source "${source}" doesn't have a feed URL configured yet in feeds.json.`);
-  }
-
   // Reddit and "daily" sources always get the latest N — no shared "last
   // seen" state, so one user's /posts call never affects another's.
   // Everything else (website/blog sources) gets a random sample instead,
   // since those feeds move slowly enough that "latest N" would otherwise
   // show the same handful of articles on every call.
-  const entries =
-    isRedditConfig(config) || isDailyCategory(config)
+  let entries;
+  if (isRedditConfig(config)) {
+    entries = await fetchSubredditEntries(env, interaction, config.subreddit, limit);
+  } else {
+    const feedUrl = getFeedUrl(config);
+    if (!feedUrl) {
+      throw new Error(`Source "${source}" doesn't have a feed URL configured yet in feeds.json.`);
+    }
+    entries = isDailyCategory(config)
       ? await fetchRssEntries(feedUrl, limit)
       : await fetchRandomEntries(feedUrl, limit);
+  }
 
   if (entries.length === 0) {
     await sendFollowup(env.DISCORD_APP_ID, interaction.token, { content: "No posts found." });
@@ -165,8 +221,63 @@ async function handleUsageCommand(env) {
   });
 }
 
+const NOT_CONNECTED = "You haven't connected a Reddit account. Run `/reddit connect` first.";
+
+async function handleRedditHome(opts, interaction, env) {
+  await incrementPostsUsage(env);
+
+  const accessToken = await getAccessToken(env, discordUserId(interaction));
+  if (!accessToken) throw new Error(NOT_CONNECTED);
+
+  const limit = Math.min(Math.max(opts.limit, 1), REDDIT_API_MAX_LIMIT);
+  const entries = await fetchRedditListing(accessToken, HOME_FEED_PATH, limit);
+  const payload = entries.length > 0 ? { embeds: buildEmbeds(entries) } : { content: "Your home feed is empty." };
+  await sendFollowup(env.DISCORD_APP_ID, interaction.token, { ...payload, flags: EPHEMERAL });
+}
+
+async function handleRedditCommand(interaction, env, ctx, origin) {
+  if (!isRedditLoginConfigured(env)) {
+    return reply("Reddit login isn't set up on this bot.", { ephemeral: true });
+  }
+
+  const subcommand = interaction.data.options?.[0];
+  const userId = discordUserId(interaction);
+
+  switch (subcommand?.name) {
+    case "connect": {
+      const url = await buildConnectUrl(env, origin, userId);
+      return reply("Approve the bot on Reddit to see your home feed and get fewer rate-limit errors. The link expires in 10 minutes.", {
+        ephemeral: true,
+        components: [{ type: 1, components: [{ type: 2, style: 5, label: "Connect Reddit", url }] }],
+      });
+    }
+    case "status": {
+      const username = await getConnectedUsername(env, userId);
+      return reply(username ? `Connected as u/${username}.` : NOT_CONNECTED, { ephemeral: true });
+    }
+    case "disconnect":
+      return deferred(ctx, env, interaction, async () => {
+        const wasConnected = await disconnectReddit(env, userId);
+        await sendFollowup(env.DISCORD_APP_ID, interaction.token, {
+          content: wasConnected ? "Reddit disconnected and access revoked." : NOT_CONNECTED,
+          flags: EPHEMERAL,
+        });
+      }, { ephemeral: true });
+    case "home":
+      return deferred(ctx, env, interaction, () =>
+        handleRedditHome(parseOptions(subcommand.options), interaction, env), { ephemeral: true });
+    default:
+      return errorResponse("Unknown subcommand", 400);
+  }
+}
+
 export default {
   async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+    if (request.method === "GET" && url.pathname === CALLBACK_PATH) {
+      return handleOAuthCallback(request, env);
+    }
+
     if (request.method !== "POST") {
       return errorResponse("Expected POST", 405);
     }
@@ -216,21 +327,13 @@ export default {
         return await handleUsageCommand(env);
       }
 
+      if (commandName === "reddit") {
+        return await handleRedditCommand(interaction, env, ctx, url.origin);
+      }
+
       if (commandName === "posts") {
         const opts = parseOptions(interaction.data.options);
-
-        ctx.waitUntil(
-          handlePostsCommand(opts, interaction, env).catch((err) => {
-            console.error(err);
-            return sendFollowup(
-              env.DISCORD_APP_ID,
-              interaction.token,
-              buildErrorFollowupPayload(err.message)
-            );
-          })
-        );
-
-        return json({ type: InteractionResponseType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE });
+        return deferred(ctx, env, interaction, () => handlePostsCommand(opts, interaction, env));
       }
     }
 

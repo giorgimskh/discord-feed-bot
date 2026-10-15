@@ -1,4 +1,4 @@
-import { normalizeSourceName, isRedditConfig } from "./index.js";
+import { normalizeSourceName, isRedditConfig } from "./sources.js";
 
 // One searchable entry per feeds.json source: the normalized key name
 // (highest-priority match target) plus a lowercased blob of metadata

@@ -6,26 +6,29 @@ function truncate(str, max) {
   return str.length > max ? str.slice(0, max - 1) + "…" : str;
 }
 
-export function buildEmbed(entry) {
-  const fields =
-    entry.score !== undefined && entry.score !== null
-      ? [
-          { name: "Score", value: String(entry.score), inline: true },
-          { name: "Comments", value: String(entry.numComments), inline: true },
-        ]
-      : [
-          {
-            name: "Published",
-            value: entry.date ? new Date(entry.date).toISOString().slice(0, 10) : "Unknown",
-            inline: true,
-          },
-        ];
+// Messages with this flag are only visible to the user who ran the command.
+export const EPHEMERAL = 64;
 
-  return {
-    title: truncate(entry.title, MAX_TITLE_LENGTH),
-    url: entry.link,
-    fields,
-  };
+// RSS entries carry only a date. Entries from Reddit's API (users who ran
+// /reddit connect) also carry score, comment count and subreddit.
+export function buildEmbed(entry) {
+  const fields = [
+    {
+      name: "Published",
+      value: entry.date ? new Date(entry.date).toISOString().slice(0, 10) : "Unknown",
+      inline: true,
+    },
+  ];
+  if (entry.score !== undefined && entry.score !== null) {
+    fields.push(
+      { name: "Score", value: String(entry.score), inline: true },
+      { name: "Comments", value: String(entry.numComments), inline: true }
+    );
+  }
+
+  const embed = { title: truncate(entry.title, MAX_TITLE_LENGTH), url: entry.link, fields };
+  if (entry.subreddit) embed.footer = { text: entry.subreddit };
+  return embed;
 }
 
 export function buildEmbeds(entries) {

@@ -36,6 +36,8 @@ const commands = [
         description: "Number of posts to return (default 5)",
         type: 4, // INTEGER
         required: false,
+        min_value: 1,
+        max_value: 10,
       },
     ],
   },
@@ -59,7 +61,7 @@ const commands = [
         description: "Show your Reddit front page (only visible to you)",
         type: 1,
         options: [
-          { name: "limit", description: "Number of posts to return (default 5)", type: 4, required: false },
+          { name: "limit", description: "Number of posts to return (default 5)", type: 4, required: false, min_value: 1, max_value: 10 },
         ],
       },
     ],

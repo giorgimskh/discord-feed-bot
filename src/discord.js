@@ -1,5 +1,5 @@
 const DISCORD_API = "https://discord.com/api/v10";
-const MAX_EMBEDS = 10;
+export const MAX_EMBEDS = 10;
 const MAX_TITLE_LENGTH = 256;
 
 function truncate(str, max) {

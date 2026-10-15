@@ -1,19 +1,22 @@
 import { verifyKey, InteractionType, InteractionResponseType } from "discord-interactions";
-import feeds from "../feeds.json";
+import feeds from "../feeds.json" with { type: "json" };
 import { fetchRssEntries, fetchRandomEntries } from "./rss.js";
 import { subredditFeedUrl, subredditApiPath, HOME_FEED_PATH, fetchRedditListing } from "./reddit.js";
 import {
+  LOGIN_PATH,
   CALLBACK_PATH,
   isRedditLoginConfigured,
   buildConnectUrl,
+  handleLoginPage,
   handleOAuthCallback,
   getAccessToken,
   getConnectedUsername,
   disconnectReddit,
 } from "./reddit-oauth.js";
 import { incrementPostsUsage, getPostsUsage } from "./usage.js";
-import { EPHEMERAL, buildEmbeds, buildErrorFollowupPayload, sendFollowup } from "./discord.js";
+import { EPHEMERAL, MAX_EMBEDS, buildEmbeds, buildErrorFollowupPayload, sendFollowup } from "./discord.js";
 import { buildSourceSearchIndex, searchSources } from "./autocomplete.js";
+import { isRedditConfig, normalizeSourceName } from "./sources.js";
 
 function json(body, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -27,8 +30,12 @@ function errorResponse(message, status) {
 }
 
 // Guild interactions carry the user under `member`, DMs under `user`.
+function discordUser(interaction) {
+  return interaction.member?.user ?? interaction.user ?? null;
+}
+
 function discordUserId(interaction) {
-  return interaction.member?.user?.id ?? interaction.user?.id ?? null;
+  return discordUser(interaction)?.id ?? null;
 }
 
 function reply(content, { ephemeral = false, components } = {}) {
@@ -54,29 +61,22 @@ function deferred(ctx, env, interaction, work, { ephemeral = false } = {}) {
   return json({ type: InteractionResponseType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE, data: flags });
 }
 
+const DEFAULT_LIMIT = 5;
+
+// The registered `limit` options already restrict input to 1–10; clamping
+// here too keeps old command registrations from passing 0 or negatives.
+function clampLimit(value) {
+  const n = Math.trunc(Number(value));
+  return Number.isFinite(n) ? Math.min(Math.max(n, 1), MAX_EMBEDS) : DEFAULT_LIMIT;
+}
+
 function parseOptions(options) {
-  const opts = { source: null, limit: 5 };
+  const opts = { source: null, limit: DEFAULT_LIMIT };
   for (const opt of options ?? []) {
     if (opt.name === "source") opts.source = opt.value;
-    if (opt.name === "limit") opts.limit = opt.value;
+    if (opt.name === "limit") opts.limit = clampLimit(opt.value);
   }
   return opts;
-}
-
-export function isRedditConfig(config) {
-  return typeof config === "object" && config !== null && "subreddit" in config;
-}
-
-// Discord's `source` option is free-text (no choices/autocomplete), so it's
-// prone to case differences, stray whitespace, or a leading "/" a user
-// might type by habit (e.g. "Worldnews", " worldnews", "/worldnews"). Feed
-// names are matched case-insensitively against this normalized form rather
-// than against feeds.json keys directly.
-export function normalizeSourceName(raw) {
-  return String(raw ?? "")
-    .trim()
-    .replace(/^\/+/, "")
-    .toLowerCase();
 }
 
 const feedsByNormalizedName = new Map(
@@ -118,19 +118,13 @@ function selectionMode(config) {
   return isRedditConfig(config) || isDailyCategory(config) ? "latest" : "random";
 }
 
-const REDDIT_API_MAX_LIMIT = 100;
-
 // Users who ran /reddit connect go through Reddit's API (higher rate limit,
 // plus score/comment counts). Everyone else, and any API failure, falls
 // back to the public RSS feed.
 async function fetchSubredditEntries(env, interaction, subreddit, limit) {
   try {
     const accessToken = await getAccessToken(env, discordUserId(interaction));
-    if (accessToken) {
-      const apiLimit = Math.min(Math.max(limit, 1), REDDIT_API_MAX_LIMIT);
-      const entries = await fetchRedditListing(accessToken, subredditApiPath(subreddit), apiLimit);
-      return entries.slice(0, limit);
-    }
+    if (accessToken) return await fetchRedditListing(accessToken, subredditApiPath(subreddit), limit);
   } catch (err) {
     console.error(`Reddit API failed, falling back to RSS: ${err.message}`);
   }
@@ -229,8 +223,7 @@ async function handleRedditHome(opts, interaction, env) {
   const accessToken = await getAccessToken(env, discordUserId(interaction));
   if (!accessToken) throw new Error(NOT_CONNECTED);
 
-  const limit = Math.min(Math.max(opts.limit, 1), REDDIT_API_MAX_LIMIT);
-  const entries = await fetchRedditListing(accessToken, HOME_FEED_PATH, limit);
+  const entries = await fetchRedditListing(accessToken, HOME_FEED_PATH, opts.limit);
   const payload = entries.length > 0 ? { embeds: buildEmbeds(entries) } : { content: "Your home feed is empty." };
   await sendFollowup(env.DISCORD_APP_ID, interaction.token, { ...payload, flags: EPHEMERAL });
 }
@@ -245,7 +238,7 @@ async function handleRedditCommand(interaction, env, ctx, origin) {
 
   switch (subcommand?.name) {
     case "connect": {
-      const url = await buildConnectUrl(env, origin, userId);
+      const url = await buildConnectUrl(env, origin, userId, `@${discordUser(interaction)?.username ?? userId}`);
       return reply("Approve the bot on Reddit to see your home feed and get fewer rate-limit errors. The link expires in 10 minutes.", {
         ephemeral: true,
         components: [{ type: 1, components: [{ type: 2, style: 5, label: "Connect Reddit", url }] }],
@@ -274,6 +267,9 @@ async function handleRedditCommand(interaction, env, ctx, origin) {
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
+    if (request.method === "GET" && url.pathname === LOGIN_PATH) {
+      return handleLoginPage(request, env);
+    }
     if (request.method === "GET" && url.pathname === CALLBACK_PATH) {
       return handleOAuthCallback(request, env);
     }

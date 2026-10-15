@@ -1,7 +1,11 @@
-// Optional per-user Reddit login. A user runs /reddit connect, approves the
-// app on Reddit, and Reddit redirects their browser to CALLBACK_PATH on
-// this Worker. Their tokens are stored in FEED_STATE, encrypted, under
-// their Discord user id.
+// Optional per-user Reddit login. A user runs /reddit connect and gets a
+// link to LOGIN_PATH on this Worker, which shows the Discord account being
+// connected before sending them on to Reddit. That step matters because the
+// link is bound to whoever ran the command: someone tricked into opening
+// another user's link would otherwise link their Reddit to that user's
+// Discord account without noticing. After approval, Reddit redirects to
+// CALLBACK_PATH, and the tokens are stored in FEED_STATE, encrypted, under
+// the Discord user id.
 //
 // The OAuth `state` is HMAC-signed rather than stored in KV: the
 // interaction (from Discord's servers) and the callback (from the user's
@@ -10,6 +14,7 @@
 import { encryptJson, decryptJson, signPayload, verifyPayload } from "./crypto.js";
 import { REDDIT_USER_AGENT, RedditApiError } from "./reddit.js";
 
+export const LOGIN_PATH = "/reddit/login";
 export const CALLBACK_PATH = "/reddit/callback";
 const SCOPES = "identity read";
 const STATE_TTL_MS = 10 * 60 * 1000;
@@ -61,11 +66,18 @@ async function loadTokens(env, discordUserId) {
   }
 }
 
-export async function buildConnectUrl(env, origin, discordUserId) {
+// Link for the /reddit connect button. `displayName` is only shown on the
+// confirmation page; `userId` is what the tokens get stored under.
+export async function buildConnectUrl(env, origin, discordUserId, displayName) {
   const state = await signPayload(env.TOKEN_ENCRYPTION_KEY, {
     userId: discordUserId,
+    displayName,
     expiresAt: Date.now() + STATE_TTL_MS,
   });
+  return `${origin}${LOGIN_PATH}?state=${encodeURIComponent(state)}`;
+}
+
+function buildAuthorizeUrl(env, origin, state) {
   const url = new URL("https://www.reddit.com/api/v1/authorize");
   url.searchParams.set("client_id", env.REDDIT_CLIENT_ID);
   url.searchParams.set("response_type", "code");
@@ -80,28 +92,53 @@ function escapeHtml(str) {
   return String(str).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 }
 
-function htmlPage(title, message, status = 200) {
+function htmlPage(title, message, { status = 200, action } = {}) {
+  const button = action
+    ? `<p><a href="${escapeHtml(action.href)}" style="display:inline-block;padding:.6rem 1.2rem;border-radius:6px;background:#ff4500;color:#fff;text-decoration:none;font-weight:600">${escapeHtml(action.label)}</a></p>`
+    : "";
   const body = `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width">
 <title>${escapeHtml(title)}</title>
 <body style="font-family:system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 1rem;line-height:1.5">
-<h1>${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p></body>`;
-  return new Response(body, { status, headers: { "Content-Type": "text/html; charset=utf-8" } });
+<h1>${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p>${button}</body>`;
+  return new Response(body, {
+    status,
+    headers: { "Content-Type": "text/html; charset=utf-8", "Referrer-Policy": "no-referrer" },
+  });
+}
+
+async function readState(env, url) {
+  const state = await verifyPayload(env.TOKEN_ENCRYPTION_KEY, url.searchParams.get("state"));
+  return state && state.expiresAt >= Date.now() ? state : null;
+}
+
+const NOT_CONFIGURED_PAGE = ["Reddit login is not set up", "This bot has no Reddit app configured.", { status: 404 }];
+const EXPIRED_PAGE = ["Link expired", "Run /reddit connect in Discord again to get a fresh link.", { status: 400 }];
+
+export async function handleLoginPage(request, env) {
+  if (!isRedditLoginConfigured(env)) return htmlPage(...NOT_CONFIGURED_PAGE);
+
+  const url = new URL(request.url);
+  const state = await readState(env, url);
+  if (!state) return htmlPage(...EXPIRED_PAGE);
+
+  return htmlPage(
+    "Connect Reddit",
+    `You're about to link your Reddit account to the Discord user ${state.displayName}. ` +
+      "If that isn't you, close this page: someone else sent you their link.",
+    { action: { label: "Continue to Reddit", href: buildAuthorizeUrl(env, url.origin, url.searchParams.get("state")) } }
+  );
 }
 
 export async function handleOAuthCallback(request, env) {
-  if (!isRedditLoginConfigured(env)) {
-    return htmlPage("Reddit login is not set up", "This bot has no Reddit app configured.", 404);
-  }
+  if (!isRedditLoginConfigured(env)) return htmlPage(...NOT_CONFIGURED_PAGE);
 
   const url = new URL(request.url);
   if (url.searchParams.get("error")) {
     return htmlPage("Reddit not connected", "You declined access on Reddit. Nothing was saved.");
   }
 
-  const state = await verifyPayload(env.TOKEN_ENCRYPTION_KEY, url.searchParams.get("state"));
-  if (!state || state.expiresAt < Date.now()) {
-    return htmlPage("Link expired", "Run /reddit connect in Discord again to get a fresh link.", 400);
-  }
+  const state = await readState(env, url);
+  if (!state) return htmlPage(...EXPIRED_PAGE);
 
   let username;
   try {
@@ -124,7 +161,7 @@ export async function handleOAuthCallback(request, env) {
     });
   } catch (err) {
     console.error(err);
-    return htmlPage("Reddit not connected", "Reddit rejected the login. Run /reddit connect to try again.", 502);
+    return htmlPage("Reddit not connected", "Reddit rejected the login. Run /reddit connect to try again.", { status: 502 });
   }
 
   return htmlPage(

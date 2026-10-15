@@ -1,0 +1,11 @@
+node_modules/
+.dev.vars
+.wrangler/
+
+# Personal source list; copy feeds.example.json to feeds.json
+feeds.json
+
+# Local tooling, not part of the app
+graphify-out/
+.claude/
+CLAUDE.md

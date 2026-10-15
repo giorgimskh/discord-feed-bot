@@ -1,0 +1,32 @@
+name = "discord-feed-bot"
+main = "src/index.js"
+compatibility_date = "2026-09-16"
+
+# This Worker only ever runs in response to an incoming HTTP request from
+# Discord (a slash-command interaction). There is no cron trigger and no
+# durable/background process, so it stays entirely within Cloudflare
+# Workers' free tier request allowance.
+
+# Used only for the /usage daily-post-count tracking (src/usage.js) — /posts
+# itself has no dedup/state, every source just returns the latest or a
+# random sample fresh on each call. Provision with
+# `wrangler kv:namespace create FEED_STATE` and paste the returned id below
+# (see README.md for the full steps).
+[[kv_namespaces]]
+binding = "FEED_STATE"
+id ="05e1d7b70f0a4d889115465c17f246a4"
+
+# Self-imposed daily budget for /posts calls (not a real Cloudflare account
+# limit — this bot's actual Workers/KV usage is well under Cloudflare's
+# free-tier quotas). Tracked in FEED_STATE, reset at UTC midnight, shown by
+# /usage. Change this number and redeploy to adjust the budget.
+[vars]
+DAILY_POST_LIMIT = "500"
+
+# Secrets (never put these here — set them with `wrangler secret put <NAME>`):
+#   DISCORD_PUBLIC_KEY     - from the Discord Developer Portal, General Information tab
+#   DISCORD_BOT_TOKEN      - from the Discord Developer Portal, Bot tab
+#   DISCORD_APP_ID         - Application ID, Discord Developer Portal
+#
+# Subreddits are fetched via Reddit's public RSS feeds (feeds.json), not
+# Reddit's API, so no Reddit credentials are needed.

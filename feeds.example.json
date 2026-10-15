@@ -1,0 +1,13 @@
+{
+  "hn-frontpage": "https://hnrss.org/frontpage",
+  "cf-blog": "https://blog.cloudflare.com/rss/",
+  "programming": { "subreddit": "programming" },
+  "postgresql": { "subreddit": "PostgreSQL" },
+  "springboot": { "subreddit": "SpringBoot" },
+  "bigthink": { "url": "https://bigthink.com/feeds/feed.rss", "category": "general" },
+  "medium-programming": {
+    "url": "https://medium.com/feed/tag/programming",
+    "category": "general",
+    "note": "Medium has no site-wide feed. Use https://medium.com/feed/tag/TAGNAME or https://medium.com/feed/PUBLICATION-NAME, one entry per tag/publication."
+  }
+}

@@ -2,6 +2,7 @@
 
 A serverless Discord bot that pulls the latest posts from subreddits, blogs and any RSS/Atom feed straight into your server with slash commands. Users can optionally connect their Reddit account to see their personal front page.
 
+![Tests](https://github.com/giorgimskh/discord-feed-bot/actions/workflows/test.yml/badge.svg)
 ![Cloudflare Workers](https://img.shields.io/badge/Cloudflare_Workers-F38020?logo=cloudflare&logoColor=white)
 ![JavaScript](https://img.shields.io/badge/JavaScript-ES_modules-F7DF1E?logo=javascript&logoColor=black)
 ![Discord](https://img.shields.io/badge/Discord-HTTP_interactions-5865F2?logo=discord&logoColor=white)
@@ -31,11 +32,11 @@ A serverless Discord bot that pulls the latest posts from subreddits, blogs and 
 
 ## Tech stack
 
-**Runtime:** Cloudflare Workers · **Storage:** Workers KV · **Language:** JavaScript (ES modules, no build step) · **Libraries:** [`discord-interactions`](https://github.com/discord/discord-interactions-js), [`fast-xml-parser`](https://github.com/NaturalIntelligence/fast-xml-parser) · **Tooling:** Wrangler
+**Runtime:** Cloudflare Workers · **Storage:** Workers KV · **Language:** JavaScript (ES modules, no build step) · **Libraries:** [`discord-interactions`](https://github.com/discord/discord-interactions-js), [`fast-xml-parser`](https://github.com/NaturalIntelligence/fast-xml-parser) · **Tooling:** Wrangler · **Testing:** `node:test`, GitHub Actions
 
 ## Quick start
 
-You need Node.js 18+, a free [Cloudflare](https://dash.cloudflare.com/sign-up) account and a Discord account.
+You need Node.js 20.10+, a free [Cloudflare](https://dash.cloudflare.com/sign-up) account and a Discord account.
 
 **1. Create the Discord app.** In the [Developer Portal](https://discord.com/developers/applications), click **New Application**. Copy the **Application ID** and **Public Key** (General Information) and the **bot token** (Bot → Reset Token).
 
@@ -54,7 +55,7 @@ cp feeds.example.json feeds.json
 
 ```bash
 npx wrangler login
-npx wrangler kv:namespace create FEED_STATE   # paste the printed id into wrangler.toml
+npx wrangler kv namespace create FEED_STATE   # paste the printed id into wrangler.toml
 npx wrangler secret put DISCORD_PUBLIC_KEY
 npx wrangler secret put DISCORD_BOT_TOKEN
 npx wrangler secret put DISCORD_APP_ID
@@ -118,9 +119,12 @@ Names are matched case-insensitively, and a leading `/` is ignored.
 ## Local development
 
 ```bash
+npm test                         # 21 tests, no accounts or network needed
 cp .dev.vars.example .dev.vars   # fill in the values
 npm run dev
 ```
+
+The integration tests in `test/worker.test.js` drive the real Worker with Ed25519-signed interactions, an in-memory KV and a fake Reddit, covering the full OAuth flow.
 
 Discord can't reach `localhost`. For a real round-trip, use `npx wrangler dev --remote` or a tunnel (`cloudflared tunnel --url http://localhost:8787`) and point the Interactions Endpoint URL at it.
 
@@ -130,10 +134,10 @@ Discord can't reach `localhost`. For a real round-trip, use `npx wrangler dev --
 - **RSS first.** Reddit's unauthenticated JSON API returns 403 to non-browser clients, so everyone gets RSS by default and OAuth is an opt-in upgrade. If an API call fails, the bot falls back to RSS.
 - **Rate limits.** RSS fetches are edge-cached for 60 seconds, so bursts of identical requests don't reach Reddit.
 - **Token security.** Reddit tokens are encrypted with AES-GCM before being written to KV. The OAuth `state` parameter is HMAC-signed instead of stored, because KV writes can take up to 60s to reach other Cloudflare locations. Both keys are derived from `TOKEN_ENCRYPTION_KEY` with HKDF.
+- **Account-linking protection.** A connect link is tied to the Discord user who requested it. Before going to Reddit, it opens a confirmation page naming that Discord account, so someone tricked into opening another person's link can see it isn't theirs.
 
 ## Known limitations
 
 - Discord shows at most 10 embeds per message, so `limit` is capped at 10.
 - After `/reddit connect`, it can take up to a minute before the bot sees the connection (KV propagation).
-- Treat your `/reddit connect` link as private: anyone who opens it within 10 minutes links *their* Reddit account to *your* Discord user.
 - Random sampling only draws from a feed's newest 50 items.
